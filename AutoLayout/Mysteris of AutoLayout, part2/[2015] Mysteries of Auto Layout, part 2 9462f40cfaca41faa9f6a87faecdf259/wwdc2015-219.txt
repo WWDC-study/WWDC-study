@@ -1,0 +1,361 @@
+ JESSE DONALDSON: Hi, everyone.
+Thanks for coming.
+ My name is Jesse, and I am responsible for Auto Layout in the AppKit and Foundation frameworks.
+Layout is one of the most fundamental tasks that we perform when we build an application, and Auto Layout is about the neatest thing ever, but sometimes it can seem kind of mysterious, and so today I want to look at a few aspects of Auto Layout that are less well understood and go through them in some detail.
+This is the second part of our two-part series, and here's a brief list of the topics we're going to be looking at.
+ I would like to start with the layout cycle.
+You probably know how to configure your user interface, but Auto Layout can still be a little bit of a black box.
+ You kind of configure things, you run your application, you get some layout.
+Hopefully it's the layout that you want, but if it's not, it can be hard to know where to look.
+ So I want to look at what happens in the middle here, how we actually go from having constraints on the view to having the frames assigned to those views.
+So here is a high-level overview of the process.
+ We start with the application run loop cheerfully iterating until the constraints change in such a way that the calculated layout needs to be different.
+ This causes a deferred layout pass to be scheduled.
+ When that layout pass eventually comes around, we go through the hierarchy and update all the frames for the views.
+ This is a little abstract, so I made a simple example here.
+ The idea is that when we uncheck this top checkbox, we'll modify a constraint to shrink the window and hide the checkboxes on the bottom.
+ So we start with frames looking like this.
+ When we change the constraint, the layout engine's notion of where everything is has already changed, but the UI hasn't updated yet.
+ And then when the layout pass comes along, the UI actually changes to match what the engine thinks should be.
+So let's talk about constraint changes.
+The constraints that you create are converted to mathematical expressions and kept inside the Layout Engine.
+ So a constraints change is really just anything that affects these expressions, and so that includes some of the obvious things like activating or deactivating constraints or changing the priority or the constant on a constraint, but also less obvious things like manipulating the view hierarchy or reconfiguring certain kinds of controls.
+ Because those may cause constraint changes indirectly.
+So what happens when a constraint changes? Well, the first thing that happens is that the Layout Engine will recompute the layout.
+ These expressions are made up of variables that represent things like the origin or the size of a particular view.
+ And when we recalculate the layout, these variables may receive new values.
+ When this happens, the views that they represent are notified, and they mark their superview as needing layout.
+ This is actually what causes the deferred layout pass to be scheduled.
+So if we look at the example here, this is where you see the frame actually change in the Layout Engine but not yet in the view hierarchy.
+So when the deferred layout pass comes along, the purpose of this, of course, is to reposition any views that are not in the right place.
+ So when we are finished, everything is in the right spot.
+And a pass is actually a little bit of a misnomer.
+ There are a couple of passes that happen here.
+The first is for updating constraints.
+ The idea with this is to make sure that if there are any pending changes to constraints, they happen now, before we go to all the trouble to traverse the view hierarchy and reposition all the views.
+And then the second pass is when we do that view repositioning.
+So let's talk about update constraints.
+Views need to explicitly request that their update constraints method be called.
+ And this pretty much works the same way as setNeedsDisplay.
+You call setNeedsUpdateConstraints, and then some time later your update constraints method will be called.
+ Really, all this is is a way for views to have a chance to make changes to constraints just in time for the next layout pass, but it's often not actually needed.
+All of your initial constraint setup should ideally happen inside Interface Builder.
+ Or if you really find that you need to allocate your constraints programmatically, some place like viewDidLoad is much better.
+ Update constraints is really just for work that needs to be repeated periodically.
+Also, it's pretty straightforward to just change constraints when you find the need to do that; whereas, if you take that logic apart from the other code that's related to it and you move it into a separate method that gets executed at a later time, your code becomes a lot harder to follow, so it will be harder for you to maintain, it will be a lot harder for other people to understand.
+So when would you need to use update constraints? Well, it boils down to performance.
+If you find that just changing your constraints in place is too slow, then update constraints might be able to help you out.
+ It turns out that changing a constraint inside update constraints is actually faster than changing a constraint at other times.
+ The reason for that is because the engine is able to treat all the constraint changes that happen in this pass as a batch.
+This is the same kind of performance benefit that you get by calling activate constraints on an entire array of constraints as opposed to activating each of those constraints individually.
+One of the common patterns where we find that this is really useful is if you have a view that will rebuild constraints in response to some kind of a configuration change.
+It turns out to be very common for clients of these kinds of views to need to configure more than one property, so it's very easy for the view, then, to end up rebuilding its constraints multiple times.
+ That's just a lot of wasted work.
+ It's much more efficient in these kinds of situations to have the view just call setNeedsUpdateConstraints and then when the update constraints pass comes along, it can rebuild its constraints once to match whatever the current configuration is.
+In any case, once this pass is complete, we know the constraints are all up-to-date, we are ready to proceed with repositioning the views.
+So this is where we traverse the view hierarchy from the top down, and we'll call layoutSubviews on any view marked as needing layout.
+On OS X, this method is called layout, but the idea is the same.
+The purpose is for the receiver to reposition its subviews.
+ It's not for the receiver to reposition itself.
+So what the framework implementation does is it will read frames for the subviews out of the Layout Engine and then assign them.
+ On the Mac we use setFrame for this, and on iOS, it's setBounds and setCenter, but the idea is the same.
+So if we look at the example again, this is where you actually see the UI update to match the frames that are in the Layout Engine.
+One other note about layoutSubviews: A lot of people will override this in order to get some kind of a custom layout, and it's fine if you need to do this, but there are some things that you need to know because it can be very easy to do things here that can get you into trouble.
+ So I want to look at this in a little more detail.
+You should really only need to override layoutSubviews if you need some kind of a layout that just can't be expressed using constraints.
+ If you can find a way to do it using constraints, that's usually more robust, more trouble free.
+If you do choose to override this, you should keep in mind that we're in the middle of the layout ceremony at this point.
+ Some views have already been laid out, other views haven't been, but they probably will be soon, and so it's a bit of a delicate moment.
+ There are some special rules to follow.
+ One is that you need to invoke the superclass implementation.
+ We need that for various bookkeeping purposes.
+Also, it's fine to invalidate the layout of views within your subtree, but you should do that before you call through to the superclass implementation.
+ Second, you don't want to call setNeedsUpdateConstraints.
+ There was an update constraints pass.
+ We went through that, we finished it, and so we missed it.
+ If we still need it now, it's too late.
+Also, you want to make sure you don't invalidate the layout of views outside your subtree.
+ If you do this, it can be very easy to cause layout feedback loops where the act of performing layout actually causes the layout to be dirtied again.
+Then we can just end up iterating forever, and that's no fun for anybody.
+You'll often find inside a layoutSubviews override that you need to modify constraints in order to get your views in the right places, and that's fine too, but again, you need to be careful.
+ It can be difficult to predict when you modify a constraint what other views in the hierarchy might be affected.
+ So if you are changing constraints, it's very easy to accidentally invalidate layout outside your subtree.
+ In any case, assuming that all this goes smoothly, layout cycle is complete at this point, everything is in the right place, and our constraints change has been fully applied.
+So some things to remember about the layout cycle: First, don't expect view frames to change immediately when you modify a constraint.
+ We've just been through this whole process about how that happens later.
+And if you do find that you need to override layoutSubviews, be very careful to avoid layout feedback loops because they can be a pain to debug.
+ So next I'd like to talk about how Auto Layout interacts with the Legacy Layout system.
+Traditionally we positioned views just by setting the frame, then we have an autoresizingMask that specifies how the view should be resized when its superview changes size.
+ Then under Auto Layout, we just do everything with constraints.
+ And in fact, subframe doesn't even work the way you might expect.
+ You can still set the frame of view, but -- and it will move where you put it, but that frame may be overwritten at any time if a layout pass comes along and the framework copies the frame from the Layout Engine and applies it to that view.
+ The trouble with this is that sometimes you just need to set the frame.
+ For example, if you are overriding layoutSubviews, you may need to set the frame of those views.
+And so luckily, there's a flag for that.
+It's called translatesAutoResizingMask IntoConstraints .
+ It's a bit of a mouthful, but it pretty much does what it says.
+ It makes views behave the way that they did under the Legacy Layout system but in an Auto Layout world.
+So if you set the frame on a view with this flag, the framework will actually generate constraints that enforce that frame in the Layout Engine.
+What this means is that you can set the frame as often as you like, and you can count on Auto Layout to keep the view where you put it.
+ Furthermore, these constraints actually implement the behavior of the autoresizingMask.
+ So if you have some portion of your application, for example, that isn't updated to Auto Layout yet and you are depending on this auto-resizing behavior, it should still behave the way that you expect.
+And finally, by actually using the Auto Layout Engine to enforce the frame that you set, it makes it possible to use constraints to position other views relative to this one.
+ Since you set the frame, you can't move the view around itself, but if we didn't tell the Layout Engine where this view needed to be, then as soon as you reference it with a constraint, we can run into problems where you'll see the size or the origin collapse to zero.
+ And that kind of behavior can be very confusing if you are not expecting it.
+ So another note here is that when you are planning to position your view using constraints, you need to make sure that this is off.
+ And if you are building your UI in Interface Builder, it will take good care of you and set this flag appropriately.
+ But if you are allocating your UI programmatically, this actually defaults to being on.
+ It needs to because there's just a lot of code that allocates a view and then expects it to behave in a certain way.
+So it defaults to on, and if you are allocating your UI programmatically and you forget to turn this off, it can cause a number of unexpected problems.
+Let's look at what happens if you forget.
+So this is a pretty simple piece of code.
+ We just allocate a button and configure it, and then we create two constraints that position this button ten points from the top, ten points from the left.
+ So it's very straightforward, but if you run it, this is what you get.
+The window is too small, it doesn't behave the way that you expect, the button is nowhere to be seen.
+And you get all this spew in the console.
+So there's actually a hint about the problem in this spew.
+ You can see this is an NSAutoresizingMaskLayout Constraint .
+This is the class of layout constraint that the framework will create for views that have translatesAutoResizingMask IntoConstraints set.
+What actually happened here is because we forgot to clear this flag, the framework generated constraints for the initial frame on this button.
+ That frame was empty, the origin and the size were both zero, so it's not very useful, but the real problem came up when we then added constraints to try to position the button at 10,10.
+ It can't be at 0,0 and 10,10 simultaneously, so the Layout Engine suddenly can't satisfy all the constraints, and things go wrong in unexpected ways.
+If we go back to the code and we just add a line to clear this flag, then things get much better.
+ We get the layout that we are expecting, the button is in the right place, the window behaves the way we would expect.
+ So some things to keep in mind about translatesAutoResizingMask IntoConstraints : You usually won't need this flag at all, but if you find that you have a view that you need to position by setting the frame directly, then this will help you out.
+And again, if you are planning to position things with constraints, you need to make sure that this is off if you are not using Interface Builder.
+So next I'd like to talk about constraint creation.
+We can do that most easily, I think, just by looking at the code we just had up on the screen, specifically the piece at the end, where we are building these constraints.
+This is the same constraint factory method that we've had since the beginning of Auto Layout, and it's perfectly effective, but it can be a little bit awkward to use.
+The code is pretty verbose, and it's a little bit difficult to read.
+ What we are really trying to express here is just that we want to position the button ten points from the top and ten points from the left.
+But in order to understand that, you need to read through this code pretty carefully and kind of put the pieces together.
+So in the new release of OS X and iOS, we are introducing a new, more concise syntax for creating constraints.
+Here is what it looks like.
+This syntax works using objects called layout anchors.
+ Thanks.
+ I am glad you like them.
+ A layout anchor represents a particular attribute of a particular view, and anchor objects expose a variety of factory methods for creating different forms of constraints.
+So in this case we see we are constraining the top anchor to be the same as the top anchor of the view plus ten.
+ If you are working in Objective-C still, they are available there as well, and the difference is even more striking.
+ We go from nearly seven lines down to just two.
+ So this new syntax still conforms to all our naming conventions, but it reads a lot more like an expression and, I think, makes it a lot easier to see the intent of the code.
+All valid forms of constraints can be created using this syntax, and you'll actually even get compiler errors for many of the invalid forms of constraints.
+So at the moment, you only get the errors in Objective-C, but they will be coming to Swift as well.
+For example, it doesn't make sense to say that the leading edge of a view should be 100 because there's no context in which to interpret that 100.
+ So you get an error that this method isn't available on a location anchor.
+ Similarly, it doesn't make sense to say the leading edge of your view is the same as the width of a different view.
+Locations and sizes are fundamentally incompatible types in Auto Layout, so you get an incompatible pointer type.
+ So previously, these things were still errors, but they would only show up at runtime, so I think making them compile time errors will help us all get our constraints right the first time, as well as write more readable, more maintainable code.
+ So next I'd like to talk about constraining negative space.
+ There are a few different kinds of layouts that come up from time to time where it's not immediately obvious how to achieve them.
+Here's a couple examples.
+ In the first case here, the goal is to make sure that the space between these buttons remains the same when the window is resized.
+ And in the bottom, we have an image and a label, and we want to center them as a group rather than center each piece of the content individually.
+So it turns out that the solution to these layout problems is the same, and that's to use dummy views.
+We actually allocate empty views, and we constrain them to fill the spaces between the buttons.
+ Once we have views in these spots, we can use an equal width constraint to make sure that their size remains the same as the window is resized.
+ And in the bottom case, we can do the same thing.
+ We use an empty view, and we constrain it to the edges of the image and the label, and then we can place a centering constraint on that empty view rather than on any of the content views themselves.
+So this works, and it's how we've traditionally solved these layout problems, but it's a little bit of an obscure trick, right? And it's also inefficient, especially on iOS, where every view has a layer associated with it.
+And so in the new release, we are exposing a new public class for layout guides.
+A layout guide simply represents a rectangle in the Layout Engine.
+They're very easy to use.
+ All you need to do is allocate them and then add them to an owning view, and then you can constrain them just like you can a view.
+ They expose anchor objects, so they work with the new constraint creation syntax, but you can also just pass them to the existing constraint factory methods.
+ So they will work with visual format language and things like that.
+We are converting existing layout guides to use these internally, and here is a good example of that.
+ UIView, you may notice, doesn't actually expose layout anchors for the margin attributes.
+ Instead, UI View has a new layout margins guide.
+ This layout guide just represents the area of the view inside the margins.
+And so if you need to constrain something to the margins, it's easiest to just go through this layout guide.
+So layout guides don't really enable any fundamentally new behavior.
+ You can do all of these things today using views.
+ But they let you solve these kinds of problems in a much more lightweight manner and also without cluttering your view hierarchy with views that don't actually need to draw.
+So next I'd like to invite Kasia back on stage to talk to you about some debugging strategies for problems that come up with Auto Layout.
+ KASIA WAWER: Hello.
+ I saw some of you this morning, I think.
+ My name is Kasia.
+ I am on the iOS Keyboards Team, and I am here to talk to you about debugging your layout, what you should do when something goes wrong.
+Those of you who have used Auto Layout in the past -- which I hope is most of you -- have probably run into something like this: You design a UI, and it's beautiful, and you're trying to implement it in your code, and you put in all your constraints carefully, and you adjust things.
+ And you hit build and run, and this happens.
+Totally the wrong thing, and in the debugger, you see something like this.
+ That's a lot of text; it can be a little intimidating.
+ But it's actually a really useful log.
+And this happens when you hit an unsatisfiable constraint error.
+ The engine has looked at the set of constraints you've given it and decided that it can't actually solve your layout because something is conflicting with something else, so it needs to break one of your constraints in order to solve your view.
+ And so it throws this error to tell you what it did, and you know, then you need to go and dig in and find that extra competing constraint.
+So let's try reading this log a little bit.
+ So here's the view we just saw and the log we got.
+ We've moved some stuff from the top to make it fit on the screen.
+ But the first place to start is by looking at the bottom.
+The last thing you see is the constraint that was actually broken.
+ This is not necessarily the constraint that's causing the problem but the one the engine had to break in order to solve your layout, so it's a really good place to start.
+You start with checking translatesAutoResizingMask IntoConstraints on that view.
+ As you saw with Jesse's example, that will show up also in the log, but it's usually a good thing to make sure you've done that first.
+ In this case, we have an aspect ratio constraint on Saturn that was broken.
+So let's highlight that higher up in the log.
+ It will show up in the log itself.
+ The next thing to do is to find the other constraints that are affecting that view that show up in the log.
+So in this case, we next see a leading to superview constraint and a trailing to superview constraint, and one to the top, and then one to the label view underneath it.
+And all of these are fine.
+ None of these are directly conflicting.
+So the next thing to look at are the views it's tied to, in this case, the label.
+So this label has the same constraint that ties it to the bottom of Saturn, and the next constraint it has is one that ties it to the top of a superview.
+ And this is a problem because Saturn is supposed to be more than 100 points tall, and this constraint is telling it to be that way.
+You'll notice that the constraint next to the label there tells you exactly what the constraint looks like in something very similar to the visual format language that you may have used for creating your constraints in the past.
+ So we see that it's 100 points from the top of the superview, and again, since Saturn needs to be more than that, it had to break one of the constraints in order to solve your layout.
+So it's actually not that difficult to read.
+Now, I have made it a little bit easier because you probably are used to seeing constraints logs that look more like this, where there's just a bunch of memory addresses and class names and there's nothing really to tell you what's what unless you have nav text in your view.
+It's much easier if it looks something like this.
+In order to achieve that, all you need to do is add identifiers to your constraints.
+And there's a couple easy ways to do that.
+ If you are using explicit constraints, it's just a property.
+I suggest naming the identifier the same thing as you are naming your constraint just so it's easy to find later if you need to dig it out of your code.
+But you can name it anything you want, so go forth and do so.
+ If you are using Visual Format Language, you get an array back, you don't get a constraint back, so you have to loop through that array and set the identifier on every constraint.
+You can set the same identifier on every constraint in the array, and that's generally a good idea.
+ If you try to pick out the individual constraints there and set identifiers on them and you change something in that array later, the ordering is going to change and you are going to have to go back and change your identifier order as well.
+Plus once you see that phrase in your log, you know exactly where you are going to look for the problem, so you don't really need to have each specific constraint laid out there.
+Finally, Interface Builder in the constraint inspector just has an identifier property right there, so that's super easy.
+Let's see.
+ So let's talk about, you know, understanding this log, and making it even easier to know what's going on.
+First, if you set accessibility identifiers on your views, those identifiers will show up in the log paired with those views, so you can find the view you are looking for.
+ That's how I got Saturn from the constraints we saw earlier.
+ It has an accessibility identifier called Saturn.
+You can also set identifiers on our new layout guides, and that's just a flat-out identifier property, nothing special about it, which makes it super easy, again, to debug layouts that are using layout guides, and since they're awesome I'm pretty sure all of you are going to be using them at some point.
+Add them as you go.
+If you try and take a very complex layout now and throw all of your identifiers in, you can do it.
+ It will take time.
+ It's worth it because you will be able to read this log later.
+ But if you are doing it as you go, that's a lot less work down the road because you can't really predict when you are going to run into this problem, necessarily, and you want to have it there when you need it.
+Finally, if you have an unsatisfiable constraints log that just has too much information, you have a very complex layout, there are hundreds of lines there, you can take that view at the bottom especially and other views that you are looking at and actually view the constraints affecting them one at a time in the debugger.
+On iOS, it's constraintsAffectingLayout ForAxis , and on OS X, it's constraintsAffectingLayout ForOrientation .
+ And that will tell you just the constraints that are affecting that view in one axis or another.
+So let's look at how that works for here.
+So I've got that view that we just looked at.
+ We see the same log down here.
+But let's wipe that out for the moment because I really want to show you how else to look at this.
+ I have set a two-finger double-tap just to break here so I don't have to use memory addresses.
+ I can use the names I've set up.
+ So we are going to break into the debugger here and ask it to print out Saturn's constraintsAffectingLayout ForAxis and its vertical axis.
+Vertical is 1, horizontal is 0.
+ If you use the wrong one, you only have one other option, so it's pretty easy to get back to it.
+ So here we see the view has a layout guide at the top, and that's fine.
+ That's the view's constraints.
+One of the other benefits to naming your constraints in your views is that you know pretty quickly which ones were set up outside of your constraints and which ones were set up by you.
+ So our vertical layout for Saturn tells us that it's tied to the top layout guide.
+That's great.
+ It also tells us that Saturn is tied to the label underneath it.
+And then in another constraint that affects Saturn but isn't directly related to Saturn, we see that constraint that's tying the label to the top of the view.
+ Since it doesn't mention Saturn anywhere, that's a pretty good clue that it's the wrong one -- also that whole Saturn is supposed to be more than a hundred points thing, which I happen to know since I wrote this code.
+ Now that I've got this nice handy label here, I can simply search for it, find the constraint that I made, and there we go.
+ I have tied it to the top anchor by a hundred points.
+And find out where it's activated.
+And get rid of it.
+ Build again.
+That's much better.
+ That's exactly what I was looking for.
+ And so it's really easy to kind of drill down into those problems, even when you have a very complex layout, if you are using identifiers properly.
+So where are we with this log? Start from the bottom.
+Finding the constraint that was broken gives you a lot of information about why it was broken.
+ Check translatesAutoResizingMask IntoConstraints [without space] first.
+ It is the culprit in many situations.
+ Set identifiers on both your constraints and your views, and finally, if the log is just too complex, go for constraintsAffectingLayout ForAxis to narrow it down.
+Okay.
+ So that's what happens when the engine looks at your constraints and knows that it can't get a solution.
+ There is no solution that fits all of your constraints.
+ But what happens if it has more than one solution? That's when we hit ambiguity.
+This is our final mystery, so congratulations for making it this far.
+ We don't have that much farther to go.
+Let's see.
+ So, ambiguous layouts.
+ A couple of possible causes of ambiguous layouts are simply too few constraints.
+If you are doing a planets' layout like this and you know that you want Saturn in the middle but your horizontal constraints aren't set up properly, the view may have to guess where to put it.
+Again, reminder, it should be in the middle.
+ The engine put it off to the side.
+ The other solution it has for it is off to the other side, and it never actually lands in the middle.
+ And that can be a problem because if it doesn't know where to put it, it's just going to put it somewhere.
+ That's not what you want.
+ You need to go back and add constraints on that view.
+Another cause of ambiguous layouts is conflicting priorities.
+ We talked about this a little bit in Part 1.
+ At the bottom of this view that we just fixed here, you will see that it can actually end up in a situation where the text field and button are kind of the wrong proportions.
+ I want it to look more like this, where the text field is taking up most of the view.
+And the reason that it ended up that way is that the engine had to make a choice between those two layouts for me.
+And it did that because the content hugging priorities on these two views are the same.
+ They are both 250, and I don't have any other way -- I am not telling the engine any other way to size those views horizontally.
+ So it had to kind of take a guess, and it guessed that maybe I wanted the text view to hug its content closely and go ahead and let the label spread out, but I really wanted it to do this and hug the button content closely.
+So as I -- this is going to be repeat for a couple of you, but if the content hugging priority on the button is set lower than that on the text field, the edges of the view are able to stretch away from its content because it's less important that it hug its content closely.
+ Or you are telling the engine it's less important that that view hug its content closely.
+Meanwhile, if you set it above, the content hugging priority of the text view, the button now hugs it closely and the text field stretches.
+ This is consistently how the engine will solve the layout in this particular circumstance.
+ So if you set these priorities properly, you can resolve some of these ambiguous layouts that you run into.
+ We have a couple of tools for resolving ambiguity.
+Interface Builder is a big help here.
+ It has these little icons on the edge, and if you click on those, it will tell you what's going on with your layout that it doesn't understand.
+And in many cases, it will tell you that you are missing constraints and what it can't solve for.
+ I need constraints for the Y position or height.
+ When you build and run an app that has this issue, you are going to end up with these views somewhere in the Y-axis, where the engine kind of decided it had to go because it didn't have any information from you.
+That makes it really easy.
+ When you are not using Interface Builder or when you get passed and you are still running into this, we have a really cool method called autolayoutTrace, and you just use that in the debugger on a view, and it will just tell you in all caps that you have a view that has an ambiguous layout, and you can then go about diagnosing the problem with that view.
+We also have the view debugger in the debug menu, which will allow you to view the frames and the alignment recs that the layout engine has calculated for your view.
+It will look something like this.
+ It will just draw it right on the view that it's looking at right now.
+Here you can see that Saturn, who is supposed to have an alignment rect that comes very closely to its content, is stretched very wide.
+ And that's problematic because that's not what I wanted.
+But over here, its actual size is correct; it's just pinned to the side which is, again, not what I wanted, but I know it's not a size problem, it's a tied-to-where sort of problem.
+The other solution is to look in the view debugger; right next to all of your breakpoint navigation, you have this little button here.
+ When you press that, it pulls up your layout in a way that you can click through and view things like constraints, just the wireframes for the views, you can see stuff in 3D.
+ It gives you a really nice view of all your layers, and that can really help with a lot of view debugging scenarios.
+Finally, we have another debugger method, because I really like using LLDB, called exerciseAmbiguityInLayout.
+ If you have a view that you know is ambiguous and you run this on that view in the debugger and continue, the Layout Engine will show you the other solution it had, which is a great clue when you are trying to figure out where the problem is coming from.
+And I will show you how that looks now.
+Okay.
+ So we are back to this view that we just saw a bit ago, and when it's in its regular layout, Saturn is flying off to the side, so I have, again, my debug gesture that I can use just because I need an easy way to break.
+The first thing I can do is see what's going on with the whole view by running auto layout trace on it, and you see that everything is okay, except for Saturn, which has an ambiguous layout.
+ That's where I am going to concentrate my efforts.
+There's also a Boolean that will tell you view by view whether it has an ambiguous layout.
+ And that's just hasAmbiguousLayout -- pretty easy to remember, and in Saturn's case, it's true.
+And if you have that happening, you can also exercise ambiguity in layout and continue, and it will show you the other solution it had for that issue.
+ So let's run that again.
+And -- oops.
+ Wrong thing to run again.
+And now it's over to the side again.
+ So in this case, it looks like the layout guides I put on either side of Saturn aren't working for some reason, so I am going to go up and find my constraints that are tying my planets to their specific areas, and they are doing that by having a ratio of layout guides on either side in order to determine where it is.
+ I've got one for Saturn right here, and it should have equal layout guides on either side, which should put it pretty much exactly in the middle.
+ The problem appears to be that I did not actually add this to the constraints array I am activating for that view.
+ And so if I add it, things go much better.
+ Saturn stays put exactly where I wanted it to be.
+ And that's really all that's involved in diagnosing ambiguity.
+ It's pretty easy once you start kind of working with it a little bit.
+So, debugging your layout.
+ The most important thing is to think carefully about the information that your engine needs.
+This morning we talked a lot about giving the Layout Engine all of its information so that it can calculate your layout properly in various adaptive scenarios.
+If you can kind of pull that all together, you are going to run into a lot fewer problems as opposed to just trying to make a couple of constraints here and there and throwing it in.
+But if you do run into problems, use the logs if constraints are unsatisfiable.
+ It gives you a lot of really good information.
+ In order to make good use of those logs, add identifiers for all those constraints and views.
+ You also want to regularly check for ambiguity.
+ You won't necessarily see it on the first run.
+ This is a good thing to put in something like a unit test and just run it on all your views regularly, so if you run into ambiguous layout, you can diagnose it before you see it.
+And then we have several tools to help you resolve these issues.
+ Interface builder is helpful, as always, the view debugger, and our various methods in lldb.
+All right.
+ So we have come a very long way today.
+If you were with us this morning, you saw us talking about maintainable layouts with stack views and changing constraints properly, working with view sizing and making self-sizing views, and then using priorities and alignment to make sure that your layout stays exactly the way you want it to in various adaptive environments.
+And then just now, we talked about the layout cycle in depth, interacting with legacy layout, creating constraints with layout anchors rather than the old methods, and constraining negative space with layout guides.
+And we just now talked about unsatisfiable constraints and resolving ambiguity, which are two problems that people tend to run into regularly when they are using Auto Layout.
+ So those are all of our mysteries.
+I hope we laid them all out for you pretty well here.
+If you haven't seen Part 1, I recommend going back and viewing it because there was a lot of information there that can be very useful to you, and the video should be up at some point in the near future, or you can travel back in time to 11:00.
+ Either way.
+So to get more information on all of this, we, of course, have documentation up on the website, and we do have that planets code, which is more for the first session but we also used here.
+ The planets code that you see here is not broken.
+ It actually works properly.
+ You will have to break it if you want to play around with some of the debugging methods you saw here.
+ We have some related sessions.
+ So again, Part 1 was earlier today, and we have a couple of sessions tomorrow that you might be interested in.
+ We are also going to head down to the lab after this, and we will be there to answer questions that you have about Auto Layout and Interface Builder.
+And that's what we've got for you today.
+ Have a good one.
+[Applause]
