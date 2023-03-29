@@ -25,7 +25,7 @@
     ---
     
     - C 기반의 low level api
-    - NSOperaionQueue보다 동시성 작업을 간단하게 관리 가능
+    - ~~NSOperaionQueue보다 동시성 작업을 간단하게 관리 가능~~
     - GCD의 Disaptch Queue에 작업을 쌓아놓으면, GCD에서 queue에 있는 작업을 분배
 - GCD Dispatch Queue 종류
     1. main queue
@@ -36,7 +36,7 @@
         - 백그라운드 스레드 실행
         - qos 지정 가능
     3. custom queue
-        - 직접 DispatchQueue 생성자 호 햇해서
+        - 직접 DispatchQueue 생성자 호출해서
         - 디폴트 serial, concurrent 가능
         - 백그라운드 실행
         - qos 설정 가능, qos 설정 안하면 시스템에서 알아서 추론
